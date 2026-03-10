@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { ZoomIn, ZoomOut, Play, Pause, SkipBack, Scissors, Trash2, Type, RectangleHorizontal, RectangleVertical, Link, Unlink } from 'lucide-react';
+import { ZoomIn, ZoomOut, Play, Pause, SkipBack, Scissors, Trash2, Type, RectangleHorizontal, RectangleVertical, Link, Unlink, ImageIcon } from 'lucide-react';
 import TimelineClip from './TimelineClip';
-import type { Track, TimelineClip as TimelineClipType, Asset, CaptionData } from '@/react-app/hooks/useProject';
+import type { Track, TimelineClip as TimelineClipType, Asset, CaptionData, FrameTemplateOverlay } from '@/react-app/hooks/useProject';
 
 interface TimelineProps {
   tracks: Track[];
@@ -29,12 +29,18 @@ interface TimelineProps {
   onDeleteAllCaptionClips?: () => void;
   getCaptionData?: (clipId: string) => CaptionData | null;
   onUndo?: () => void;
+  // Frame template overlays for 9:16 mode
+  frameOverlays?: FrameTemplateOverlay[];
+  onSelectOverlay?: (overlayId: string) => void;
+  selectedOverlayId?: string | null;
+  onUpdateOverlay?: (overlayId: string, updates: { startTime?: number; endTime?: number }) => void;
 }
 
 const TRACK_HEIGHTS: Record<string, number> = {
   video: 56,
   audio: 44,
   text: 48,
+  overlay: 36, // For frame template overlays
 };
 
 function formatTime(seconds: number): string {
@@ -69,10 +75,23 @@ export default function Timeline({
   onDeleteAllCaptionClips,
   getCaptionData,
   onUndo,
+  frameOverlays = [],
+  onSelectOverlay,
+  selectedOverlayId,
+  onUpdateOverlay,
 }: TimelineProps) {
   const [zoom, setZoom] = useState(1);
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [dragOverTrack, setDragOverTrack] = useState<string | null>(null);
+
+  // Overlay drag/resize state
+  const [draggingOverlay, setDraggingOverlay] = useState<{
+    id: string;
+    mode: 'move' | 'resize-left' | 'resize-right';
+    startX: number;
+    originalStart: number;
+    originalEnd: number;
+  } | null>(null);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const tracksContainerRef = useRef<HTMLDivElement>(null);
@@ -227,6 +246,74 @@ export default function Timeline({
     assets.find(a => a.id === clip.assetId),
     [assets]
   );
+
+  // Overlay drag handlers
+  const handleOverlayDragStart = useCallback((
+    e: React.MouseEvent,
+    overlayId: string,
+    mode: 'move' | 'resize-left' | 'resize-right',
+    originalStart: number,
+    originalEnd: number
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingOverlay({
+      id: overlayId,
+      mode,
+      startX: e.clientX,
+      originalStart,
+      originalEnd,
+    });
+    onSelectOverlay?.(overlayId);
+  }, [onSelectOverlay]);
+
+  // Handle overlay drag move
+  useEffect(() => {
+    if (!draggingOverlay || !onUpdateOverlay) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - draggingOverlay.startX;
+      const deltaTime = deltaX / pixelsPerSecond;
+
+      let newStart = draggingOverlay.originalStart;
+      let newEnd = draggingOverlay.originalEnd;
+
+      if (draggingOverlay.mode === 'move') {
+        // Move the whole clip
+        const overlayDuration = draggingOverlay.originalEnd - draggingOverlay.originalStart;
+        newStart = Math.max(0, draggingOverlay.originalStart + deltaTime);
+        newEnd = newStart + overlayDuration;
+        // Clamp to duration
+        if (newEnd > duration) {
+          newEnd = duration;
+          newStart = duration - overlayDuration;
+        }
+      } else if (draggingOverlay.mode === 'resize-left') {
+        // Resize from left edge (change start time)
+        newStart = Math.max(0, Math.min(draggingOverlay.originalStart + deltaTime, draggingOverlay.originalEnd - 0.5));
+      } else if (draggingOverlay.mode === 'resize-right') {
+        // Resize from right edge (change end time)
+        newEnd = Math.max(draggingOverlay.originalStart + 0.5, Math.min(draggingOverlay.originalEnd + deltaTime, duration));
+      }
+
+      onUpdateOverlay(draggingOverlay.id, {
+        startTime: Math.round(newStart * 10) / 10, // Round to 0.1s precision
+        endTime: Math.round(newEnd * 10) / 10,
+      });
+    };
+
+    const handleMouseUp = () => {
+      setDraggingOverlay(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [draggingOverlay, pixelsPerSecond, duration, onUpdateOverlay]);
 
   return (
     <div
@@ -393,6 +480,17 @@ export default function Timeline({
                 </div>
               );
             })}
+
+            {/* Overlay track header (only in 9:16 mode with overlays) */}
+            {aspectRatio === '9:16' && frameOverlays.length > 0 && (
+              <div
+                className="flex items-center justify-center gap-1 text-xs font-medium text-purple-400 border-b border-zinc-800/50 px-1"
+                style={{ height: TRACK_HEIGHTS.overlay }}
+              >
+                <ImageIcon size={12} />
+                <span className="truncate">Overlays</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -503,6 +601,97 @@ export default function Timeline({
                   </div>
                 );
               })}
+
+              {/* Overlay track (only in 9:16 mode with overlays) */}
+              {aspectRatio === '9:16' && frameOverlays.length > 0 && (
+                <div
+                  className="relative border-b border-zinc-800/50 bg-purple-950/20"
+                  style={{ height: TRACK_HEIGHTS.overlay }}
+                >
+                  {/* Track background grid lines */}
+                  {Array.from({ length: tickCount }).map((_, i) => {
+                    const time = i * timeInterval;
+                    if (time > totalDuration) return null;
+                    return (
+                      <div
+                        key={i}
+                        className="absolute top-0 bottom-0 w-px bg-zinc-800/50"
+                        style={{ left: `${time * pixelsPerSecond}px` }}
+                      />
+                    );
+                  })}
+
+                  {/* Overlay clips */}
+                  {frameOverlays.map((overlay) => {
+                    const startTime = overlay.startTime ?? 0;
+                    const endTime = overlay.endTime ?? duration;
+                    const overlayDuration = endTime - startTime;
+                    const isSelected = selectedOverlayId === overlay.id;
+                    const isDragging = draggingOverlay?.id === overlay.id;
+                    const clipWidth = overlayDuration * pixelsPerSecond;
+
+                    // Color based on overlay type
+                    const overlayColor = overlay.type === 'logo'
+                      ? 'bg-purple-500/60 hover:bg-purple-500/80'
+                      : overlay.type === 'video'
+                        ? 'bg-cyan-500/60 hover:bg-cyan-500/80'
+                        : 'bg-pink-500/60 hover:bg-pink-500/80';
+
+                    return (
+                      <div
+                        key={overlay.id}
+                        className={`absolute top-1 bottom-1 rounded transition-all group ${overlayColor} ${isSelected ? 'ring-2 ring-white' : ''} ${isDragging ? 'opacity-80' : ''}`}
+                        style={{
+                          left: `${startTime * pixelsPerSecond}px`,
+                          width: `${clipWidth}px`,
+                          cursor: isDragging ? 'grabbing' : 'grab',
+                        }}
+                        onMouseDown={(e) => handleOverlayDragStart(e, overlay.id, 'move', startTime, endTime)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectOverlay?.(overlay.id);
+                        }}
+                      >
+                        {/* Left resize handle */}
+                        <div
+                          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 rounded-l z-10"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleOverlayDragStart(e, overlay.id, 'resize-left', startTime, endTime);
+                          }}
+                        >
+                          <div className="absolute left-0.5 top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/50 rounded opacity-0 group-hover:opacity-100" />
+                        </div>
+
+                        {/* Content */}
+                        <div className="px-2 h-full flex items-center overflow-hidden">
+                          <span className="text-[10px] text-white truncate select-none">
+                            {overlay.type === 'logo' ? '🖼️' : overlay.type === 'video' ? '🎬' : '📝'} {overlay.type === 'text' ? overlay.text || 'Text' : overlay.type === 'video' ? 'Video' : 'Logo'}
+                          </span>
+                        </div>
+
+                        {/* Right resize handle */}
+                        <div
+                          className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 rounded-r z-10"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleOverlayDragStart(e, overlay.id, 'resize-right', startTime, endTime);
+                          }}
+                        >
+                          <div className="absolute right-0.5 top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/50 rounded opacity-0 group-hover:opacity-100" />
+                        </div>
+
+                        {/* Time tooltip when dragging */}
+                        {isDragging && (
+                          <div className="absolute -top-6 left-1/2 -translate-x-1/2 px-1.5 py-0.5 bg-black/90 rounded text-[9px] text-white whitespace-nowrap">
+                            {formatTime(startTime)} - {formatTime(endTime)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Playhead */}

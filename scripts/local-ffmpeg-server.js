@@ -2016,6 +2016,8 @@ async function handleProjectSave(req, res, sessionId) {
     if (data.clips) session.project.clips = data.clips;
     if (data.settings) session.project.settings = { ...session.project.settings, ...data.settings };
     if (data.captionData) session.project.captionData = data.captionData;
+    if (data.frameTemplate) session.project.frameTemplate = data.frameTemplate;
+    if (data.overlayAssets) session.project.overlayAssets = data.overlayAssets;
 
     // Save to disk for persistence
     const projectPath = join(session.dir, 'project.json');
@@ -2091,9 +2093,87 @@ async function handleProjectRender(req, res, sessionId) {
     const filterParts = [];
     let inputIndex = 0;
 
-    // Create black background
-    filterParts.push(`color=black:s=${settings.width}x${settings.height}:d=${totalDuration}:r=${settings.fps}[base]`);
+    // Get frame template if present (for 9:16 vertical video styling)
+    const frameTemplate = session.project.frameTemplate;
+    const overlayAssets = session.project.overlayAssets || [];
+
+    // Helper to write base64 data URL to temp file
+    const writeBase64ToTempFile = (dataUrl, filename) => {
+      const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!matches) return null;
+      const buffer = Buffer.from(matches[2], 'base64');
+      const tempPath = join(session.dir, 'temp_' + filename);
+      writeFileSync(tempPath, buffer);
+      return tempPath;
+    };
+
+    // Create background based on frame template
+    let backgroundFilter;
+    if (frameTemplate && frameTemplate.background) {
+      const bg = frameTemplate.background;
+      if (bg.type === 'solid') {
+        // Solid color background
+        const color = (bg.color || '#000000').replace('#', '');
+        backgroundFilter = `color=0x${color}:s=${settings.width}x${settings.height}:d=${totalDuration}:r=${settings.fps}[base]`;
+      } else if (bg.type === 'gradient') {
+        // Gradient background using gradients filter
+        const start = (bg.gradientStart || '#1a1a2e').replace('#', '');
+        const end = (bg.gradientEnd || '#16213e').replace('#', '');
+        const angle = bg.gradientAngle || 180;
+        // FFmpeg gradients filter: gradients=s=WxH:c0=color1:c1=color2:x0=x:y0=y:x1=x:y1=y
+        // Calculate gradient direction based on angle
+        const radians = (angle - 90) * Math.PI / 180;
+        const x0 = Math.round(settings.width / 2 + Math.cos(radians) * settings.width / 2);
+        const y0 = Math.round(settings.height / 2 + Math.sin(radians) * settings.height / 2);
+        const x1 = Math.round(settings.width / 2 - Math.cos(radians) * settings.width / 2);
+        const y1 = Math.round(settings.height / 2 - Math.sin(radians) * settings.height / 2);
+        backgroundFilter = `gradients=s=${settings.width}x${settings.height}:c0=0x${start}:c1=0x${end}:x0=${x0}:y0=${y0}:x1=${x1}:y1=${y1}:d=${totalDuration}:r=${settings.fps}[base]`;
+      } else {
+        // Default to black for blur/image (handled separately)
+        backgroundFilter = `color=black:s=${settings.width}x${settings.height}:d=${totalDuration}:r=${settings.fps}[base]`;
+      }
+    } else {
+      // Default black background
+      backgroundFilter = `color=black:s=${settings.width}x${settings.height}:d=${totalDuration}:r=${settings.fps}[base]`;
+    }
+    filterParts.push(backgroundFilter);
     let lastVideo = 'base';
+
+    // Handle blur background - needs to use first video clip scaled and blurred
+    if (frameTemplate && frameTemplate.background && frameTemplate.background.type === 'blur') {
+      const blurAmount = frameTemplate.background.blurAmount || 20;
+      // Find the first V1 video clip for blur background
+      const v1Clip = videoClips.find(c => c.trackId === 'V1');
+      if (v1Clip) {
+        const v1Asset = session.assets.get(v1Clip.assetId);
+        if (v1Asset && v1Asset.type === 'video') {
+          inputs.push('-i', v1Asset.path);
+          const blurIdx = inputIndex++;
+          const inPoint = v1Clip.inPoint || 0;
+          const outPoint = v1Clip.outPoint || v1Asset.duration;
+          // Scale to fill (cover), blur, and use as background
+          filterParts.push(`[${blurIdx}:v]trim=${inPoint}:${outPoint},setpts=PTS-STARTPTS+(${v1Clip.start}/TB),scale=${settings.width}:${settings.height}:force_original_aspect_ratio=increase,crop=${settings.width}:${settings.height},gblur=sigma=${blurAmount}[blurbg]`);
+          filterParts.push(`[base][blurbg]overlay=0:0:enable='between(t,${v1Clip.start},${v1Clip.start + (outPoint - inPoint)})'[blurbase]`);
+          lastVideo = 'blurbase';
+        }
+      }
+    }
+
+    // Handle image background
+    if (frameTemplate && frameTemplate.background && frameTemplate.background.type === 'image' && frameTemplate.background.imageAssetId) {
+      const bgAsset = overlayAssets.find(a => a.id === frameTemplate.background.imageAssetId);
+      if (bgAsset && bgAsset.dataUrl) {
+        const tempPath = writeBase64ToTempFile(bgAsset.dataUrl, 'bg_image.png');
+        if (tempPath) {
+          inputs.push('-loop', '1', '-i', tempPath);
+          const bgIdx = inputIndex++;
+          // Scale image to fill frame
+          filterParts.push(`[${bgIdx}:v]scale=${settings.width}:${settings.height}:force_original_aspect_ratio=increase,crop=${settings.width}:${settings.height}[imgbg]`);
+          filterParts.push(`[base][imgbg]overlay=0:0[imgbase]`);
+          lastVideo = 'imgbase';
+        }
+      }
+    }
 
     // Process video clips
     const videoInputIndices = []; // track idx + asset for audio mixing later
@@ -2152,6 +2232,77 @@ async function handleProjectRender(req, res, sessionId) {
 
       filterParts.push(`[${lastVideo}][v${idx}]overlay=x=${overlayX}:y=${overlayY}:enable='${enable}'[out${idx}]`);
       lastVideo = `out${idx}`;
+    }
+
+    // Process frame template overlays (logos, text, video overlays)
+    if (frameTemplate && frameTemplate.overlays && frameTemplate.overlays.length > 0) {
+      let overlayIdx = 0;
+      for (const overlay of frameTemplate.overlays) {
+        const startTime = overlay.startTime ?? 0;
+        const endTime = overlay.endTime ?? totalDuration;
+        const enable = `between(t,${startTime},${endTime})`;
+
+        // Calculate position based on zone (top 20% or bottom 20% of frame)
+        // Zone height is 20% of frame, video is in middle 60%
+        const zoneHeight = settings.height * 0.2;
+        const zoneTop = overlay.zone === 'top' ? 0 : settings.height * 0.8;
+        // X is 0-100% of width, Y is 0-100% within zone
+        const xPos = Math.round(settings.width * (overlay.x / 100));
+        const yPos = Math.round(zoneTop + zoneHeight * (overlay.y / 100));
+
+        if (overlay.type === 'logo' && overlay.assetId) {
+          // Find the overlay asset
+          const asset = overlayAssets.find(a => a.id === overlay.assetId);
+          if (asset && asset.dataUrl) {
+            const tempPath = writeBase64ToTempFile(asset.dataUrl, `logo_${overlayIdx}.png`);
+            if (tempPath) {
+              inputs.push('-loop', '1', '-i', tempPath);
+              const logoIdx = inputIndex++;
+              const scale = overlay.scale || 0.3;
+              const logoWidth = Math.round(settings.width * scale);
+
+              // Scale logo and overlay with timing
+              filterParts.push(`[${logoIdx}:v]scale=${logoWidth}:-1[logo${overlayIdx}]`);
+              filterParts.push(`[${lastVideo}][logo${overlayIdx}]overlay=x=${xPos}-w/2:y=${yPos}-h/2:enable='${enable}'[logoout${overlayIdx}]`);
+              lastVideo = `logoout${overlayIdx}`;
+              overlayIdx++;
+            }
+          }
+        } else if (overlay.type === 'text' && overlay.text) {
+          // Use drawtext filter for text overlays
+          const text = overlay.text.replace(/'/g, "\\'").replace(/:/g, "\\:");
+          const fontSize = overlay.fontSize || 32;
+          const fontColor = (overlay.color || '#ffffff').replace('#', '');
+          const fontFamily = overlay.fontFamily || 'Arial';
+
+          filterParts.push(`[${lastVideo}]drawtext=text='${text}':fontsize=${fontSize}:fontcolor=0x${fontColor}:fontfile=/Windows/Fonts/arial.ttf:x=${xPos}-tw/2:y=${yPos}-th/2:enable='${enable}'[textout${overlayIdx}]`);
+          lastVideo = `textout${overlayIdx}`;
+          overlayIdx++;
+        } else if (overlay.type === 'video' && overlay.assetId) {
+          // Find the video overlay asset
+          const asset = overlayAssets.find(a => a.id === overlay.assetId);
+          if (asset && asset.dataUrl) {
+            const tempPath = writeBase64ToTempFile(asset.dataUrl, `vidoverlay_${overlayIdx}.mp4`);
+            if (tempPath) {
+              // For looping video overlays
+              if (overlay.loop) {
+                inputs.push('-stream_loop', '-1', '-i', tempPath);
+              } else {
+                inputs.push('-i', tempPath);
+              }
+              const vidIdx = inputIndex++;
+              const scale = overlay.scale || 0.4;
+              const vidWidth = Math.round(settings.width * scale);
+
+              // Scale video overlay and composite with timing
+              filterParts.push(`[${vidIdx}:v]scale=${vidWidth}:-1,setpts=PTS-STARTPTS[vidov${overlayIdx}]`);
+              filterParts.push(`[${lastVideo}][vidov${overlayIdx}]overlay=x=${xPos}-w/2:y=${yPos}-h/2:enable='${enable}'[vidovout${overlayIdx}]`);
+              lastVideo = `vidovout${overlayIdx}`;
+              overlayIdx++;
+            }
+          }
+        }
+      }
     }
 
     // Rename final output
@@ -5645,9 +5796,9 @@ When transcript context is available, you can use it to:
 
 Return ONLY the complete JSON structure with your minimal change applied. No markdown, no explanation.`;
 
-    // Use Gemini 3.0 Pro for better instruction following on edits
+    // Use Gemini 2.5 Flash for better quota availability
     const result = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
 

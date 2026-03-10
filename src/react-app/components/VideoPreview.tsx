@@ -1,7 +1,8 @@
 import { Play, Image as ImageIcon, Layers, Move } from 'lucide-react';
 import { useRef, useEffect, forwardRef, useImperativeHandle, useMemo, useState, useCallback } from 'react';
 import CaptionRenderer from './CaptionRenderer';
-import type { CaptionWord, CaptionStyle } from '@/react-app/hooks/useProject';
+import type { CaptionWord, CaptionStyle, FrameTemplate, Asset } from '@/react-app/hooks/useProject';
+import type { OverlayAsset } from '@/react-app/hooks/useOverlayAssets';
 
 interface ClipTransform {
   x?: number;
@@ -31,9 +32,14 @@ interface VideoPreviewProps {
   layers?: ClipLayer[];
   isPlaying?: boolean;
   aspectRatio?: '16:9' | '9:16';
+  currentTime?: number; // Current playback time in seconds
+  projectDuration?: number; // Total project duration in seconds
   onLayerMove?: (layerId: string, x: number, y: number) => void;
   onLayerSelect?: (layerId: string) => void;
   selectedLayerId?: string | null;
+  frameTemplate?: FrameTemplate | null;
+  assets?: Asset[];
+  overlayAssets?: OverlayAsset[]; // Passed from parent to share state
 }
 
 export interface VideoPreviewHandle {
@@ -80,13 +86,40 @@ function getTransformStyles(transform?: ClipTransform, zIndex: number = 0, isDra
   };
 }
 
+// Helper to get background style from frame template
+function getFrameBackgroundStyle(template: FrameTemplate, baseVideoUrl?: string): React.CSSProperties {
+  const bg = template.background;
+
+  switch (bg.type) {
+    case 'solid':
+      return { backgroundColor: bg.color || '#000000' };
+    case 'gradient':
+      return {
+        background: `linear-gradient(${bg.gradientAngle || 180}deg, ${bg.gradientStart || '#1a1a2e'}, ${bg.gradientEnd || '#16213e'})`,
+      };
+    case 'blur':
+      // Blur is handled separately with a video element
+      return {};
+    case 'image':
+      // Image is handled separately with an img element
+      return {};
+    default:
+      return { backgroundColor: '#000000' };
+  }
+}
+
 const VideoPreview = forwardRef<VideoPreviewHandle, VideoPreviewProps>(({
   layers = [],
   isPlaying = false,
   aspectRatio = '16:9',
+  currentTime = 0,
+  projectDuration = 60,
   onLayerMove,
   onLayerSelect,
   selectedLayerId,
+  frameTemplate,
+  assets = [],
+  overlayAssets = [], // Received from parent - shared state
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const loadedSrcRef = useRef<string | null>(null);
@@ -282,11 +315,68 @@ const VideoPreview = forwardRef<VideoPreviewHandle, VideoPreviewProps>(({
     [sortedLayers]
   );
 
+  // Get asset URL helper - checks both overlay assets and project assets
+  const getAssetUrl = useCallback((assetId: string) => {
+    // First check overlay assets (for logos, video overlays in frame templates)
+    const overlayAsset = overlayAssets.find(a => a.id === assetId);
+    if (overlayAsset) {
+      console.log('[VideoPreview] Found overlay asset:', assetId, '-> URL:', overlayAsset.url);
+      return overlayAsset.url;
+    }
+    // Fall back to project assets
+    const asset = assets.find(a => a.id === assetId);
+    const url = asset?.streamUrl || asset?.thumbnailUrl || '';
+    console.log('[VideoPreview] Looking for asset:', assetId, '-> Found:', !!asset, '-> URL:', url || '(empty)');
+    return url;
+  }, [overlayAssets, assets]);
+
+  // Is vertical with frame template active?
+  const isVerticalWithFrame = aspectRatio === '9:16' && frameTemplate;
+
   return (
     <div
       ref={containerRef}
       className={`relative ${containerClass} bg-black rounded-xl overflow-hidden shadow-2xl ring-1 ring-white/10`}
     >
+      {/* Frame Template Background (only for 9:16 with active template) */}
+      {isVerticalWithFrame && (
+        <>
+          {/* Solid or Gradient background */}
+          {(frameTemplate.background.type === 'solid' || frameTemplate.background.type === 'gradient') && (
+            <div
+              className="absolute inset-0"
+              style={{ ...getFrameBackgroundStyle(frameTemplate), zIndex: 0 }}
+            />
+          )}
+
+          {/* Blur background - uses the base video blurred */}
+          {frameTemplate.background.type === 'blur' && foundBaseLayer && (
+            <div className="absolute inset-0 overflow-hidden" style={{ zIndex: 0 }}>
+              <video
+                src={foundBaseLayer.url}
+                className="absolute w-full h-full object-cover scale-110"
+                style={{ filter: `blur(${frameTemplate.background.blurAmount || 20}px)` }}
+                muted
+                playsInline
+                autoPlay={isPlaying}
+                loop
+              />
+            </div>
+          )}
+
+          {/* Image background */}
+          {frameTemplate.background.type === 'image' && frameTemplate.background.imageAssetId && (
+            <div className="absolute inset-0" style={{ zIndex: 0 }}>
+              <img
+                src={getAssetUrl(frameTemplate.background.imageAssetId)}
+                alt="Background"
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )}
+        </>
+      )}
+
       {/* Base video layer (V1) - rendered separately for stability */}
       {foundBaseLayer && (
         <video
@@ -438,6 +528,136 @@ const VideoPreview = forwardRef<VideoPreviewHandle, VideoPreviewProps>(({
               }}
               style={{ display: 'none' }}
             />
+          );
+        }
+
+        return null;
+      })}
+
+      {/* Frame Template Overlays (logos, text) */}
+      {isVerticalWithFrame && frameTemplate.overlays
+        .filter((overlay) => {
+          // Filter overlays based on current time
+          const start = overlay.startTime ?? 0;
+          const end = overlay.endTime ?? projectDuration;
+          return currentTime >= start && currentTime <= end;
+        })
+        .map((overlay) => {
+        // Calculate position based on zone
+        // Top zone: top 20% of frame, Bottom zone: bottom 20% of frame
+        const zoneTop = overlay.zone === 'top' ? '0%' : '80%';
+        const zoneHeight = '20%';
+
+        // Position within zone (x is 0-100 across width, y is 0-100 within zone height)
+        const leftPercent = overlay.x;
+        const topWithinZone = overlay.y;
+
+        if (overlay.type === 'logo' && overlay.assetId) {
+          const logoUrl = getAssetUrl(overlay.assetId);
+          console.log('[VideoPreview] Logo overlay:', overlay.id, 'assetId:', overlay.assetId, 'url:', logoUrl);
+          if (!logoUrl) {
+            console.warn('[VideoPreview] No URL found for logo overlay:', overlay.id);
+            return null;
+          }
+
+          // Calculate scale - use container width percentage via CSS
+          const scalePercent = (overlay.scale || 0.3) * 100;
+
+          return (
+            <div
+              key={`${overlay.id}-${overlay.zone}-${overlay.x}-${overlay.y}`}
+              className="absolute pointer-events-none"
+              style={{
+                // Position based on zone + Y offset within zone
+                top: `calc(${zoneTop} + ${zoneHeight} * ${topWithinZone / 100})`,
+                left: `${leftPercent}%`,
+                transform: 'translate(-50%, -50%)',
+                zIndex: 200,
+                // Set width relative to container for proper img sizing
+                width: `${scalePercent}%`,
+                maxWidth: '80%',
+              }}
+            >
+              <img
+                src={logoUrl}
+                alt="Logo overlay"
+                crossOrigin="anonymous"
+                onError={(e) => console.error('[VideoPreview] Logo image failed to load:', logoUrl, e)}
+                onLoad={() => console.log('[VideoPreview] Logo image loaded successfully:', logoUrl)}
+                style={{
+                  width: '100%',
+                  height: 'auto',
+                  opacity: overlay.opacity ?? 1,
+                  objectFit: 'contain',
+                }}
+              />
+            </div>
+          );
+        }
+
+        if (overlay.type === 'text' && overlay.text) {
+          return (
+            <div
+              key={`${overlay.id}-text-${overlay.color}-${overlay.fontSize}-${overlay.text}`}
+              className="absolute pointer-events-none"
+              style={{
+                top: `calc(${zoneTop} + ${zoneHeight} * ${topWithinZone / 100})`,
+                left: `${leftPercent}%`,
+                transform: 'translate(-50%, -50%)',
+                zIndex: 200,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: overlay.fontFamily || 'Inter',
+                  fontSize: `${overlay.fontSize || 32}px`,
+                  fontWeight: overlay.fontWeight || 'bold',
+                  color: overlay.color || '#ffffff',
+                  textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {overlay.text}
+              </span>
+            </div>
+          );
+        }
+
+        if (overlay.type === 'video' && overlay.assetId) {
+          const videoUrl = getAssetUrl(overlay.assetId);
+          if (!videoUrl) return null;
+
+          // Calculate scale - use container width percentage via CSS
+          const scalePercent = (overlay.scale || 0.4) * 100;
+
+          return (
+            <div
+              key={`${overlay.id}-${overlay.zone}-${overlay.x}-${overlay.y}`}
+              className="absolute pointer-events-none"
+              style={{
+                top: `calc(${zoneTop} + ${zoneHeight} * ${topWithinZone / 100})`,
+                left: `${leftPercent}%`,
+                transform: 'translate(-50%, -50%)',
+                zIndex: 200,
+                // Set width relative to container for proper video sizing
+                width: `${scalePercent}%`,
+                maxWidth: '80%',
+              }}
+            >
+              <video
+                src={videoUrl}
+                autoPlay
+                muted
+                loop={overlay.loop ?? true}
+                playsInline
+                style={{
+                  width: '100%',
+                  height: 'auto',
+                  opacity: overlay.opacity ?? 1,
+                  objectFit: 'contain',
+                }}
+              />
+            </div>
           );
         }
 

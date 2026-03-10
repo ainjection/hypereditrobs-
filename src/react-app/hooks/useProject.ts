@@ -80,6 +80,50 @@ export interface ProjectSettings {
   width: number;
   height: number;
   fps: number;
+  activeFrameTemplateId?: string;
+}
+
+// Frame Template - background and overlays for 9:16 vertical video framing
+export interface FrameTemplateBackground {
+  type: 'solid' | 'gradient' | 'image' | 'blur';
+  color?: string;
+  gradientStart?: string;
+  gradientEnd?: string;
+  gradientAngle?: number;
+  imageAssetId?: string;
+  blurAmount?: number;
+}
+
+export interface FrameTemplateOverlay {
+  id: string;
+  type: 'logo' | 'text' | 'video';
+  zone: 'top' | 'bottom';
+  x: number; // 0-100 percentage
+  y: number; // 0-100 percentage within zone
+  assetId?: string;
+  scale?: number;
+  opacity?: number;
+  text?: string;
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: 'normal' | 'bold' | 'black';
+  color?: string;
+  // Timeline positioning (in seconds)
+  startTime?: number; // When overlay appears (default: 0)
+  endTime?: number;   // When overlay disappears (undefined = entire duration)
+  // Video overlay specific
+  loop?: boolean; // Whether to loop the video (default: true)
+}
+
+export interface FrameTemplate {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  background: FrameTemplateBackground;
+  overlays: FrameTemplateOverlay[];
+  videoScale?: number;
+  videoY?: number;
 }
 
 // Project state
@@ -867,7 +911,12 @@ export function useProject() {
 
   // Render project
   // Uses refs to always get latest state
-  const renderProject = useCallback(async (preview = false): Promise<string> => {
+  // Optional frameTemplate and overlayAssets for 9:16 vertical video rendering
+  const renderProject = useCallback(async (
+    preview = false,
+    frameTemplate?: FrameTemplate | null,
+    overlayAssets?: Array<{ id: string; type: 'image' | 'video'; dataUrl: string }>
+  ): Promise<string> => {
     if (!session) throw new Error('No session');
 
     setLoading(true);
@@ -875,6 +924,7 @@ export function useProject() {
 
     try {
       // Save project first - use refs to get latest state
+      // Include frame template data if provided (for 9:16 vertical video)
       await fetch(`${LOCAL_FFMPEG_URL}/session/${session.sessionId}/project`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -883,6 +933,8 @@ export function useProject() {
           clips: clipsRef.current,
           settings: settingsRef.current,
           captionData: captionDataRef.current,
+          frameTemplate: frameTemplate || undefined,
+          overlayAssets: overlayAssets || undefined,
         }),
       });
 

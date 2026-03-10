@@ -13,7 +13,14 @@ import ResizableVerticalPanel from '@/react-app/components/ResizableVerticalPane
 import TimelineTabs from '@/react-app/components/TimelineTabs';
 import { useProject, Asset, TimelineClip, CaptionStyle } from '@/react-app/hooks/useProject';
 import { useVideoSession } from '@/react-app/hooks/useVideoSession';
-import { Sparkles, ListOrdered, Copy, Check, X, Download, Play, Palette, Film } from 'lucide-react';
+import { Sparkles, ListOrdered, Copy, Check, X, Download, Play, Palette, Film, HelpCircle } from 'lucide-react';
+import KeyboardShortcuts from '@/react-app/components/KeyboardShortcuts';
+import ProjectTemplates from '@/react-app/components/ProjectTemplates';
+import FrameTemplatePanel from '@/react-app/components/FrameTemplatePanel';
+import FrameTemplateSelector from '@/react-app/components/FrameTemplateSelector';
+import { useFrameTemplates, createBlankTemplate } from '@/react-app/hooks/useFrameTemplates';
+import { useOverlayAssets } from '@/react-app/hooks/useOverlayAssets';
+import type { FrameTemplate } from '@/react-app/hooks/useProject';
 import type { TemplateId } from '@/remotion/templates';
 
 interface ChapterData {
@@ -24,6 +31,7 @@ interface ChapterData {
 
 export default function Home() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -35,6 +43,11 @@ export default function Home() {
   const [autoSnap, setAutoSnap] = useState(true); // Ripple delete mode - shift clips when deleting
   const [activeAgent, setActiveAgent] = useState<'director' | 'picasso' | 'dicaprio'>('director');
   const [showGifSearch, setShowGifSearch] = useState(false);
+  const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+
+  // Frame template for 9:16 vertical video styling
+  const { templates: frameTemplates, saveTemplate: saveFrameTemplate, deleteTemplate: deleteFrameTemplate } = useFrameTemplates();
+  const [currentFrameTemplate, setCurrentFrameTemplate] = useState<FrameTemplate>(() => createBlankTemplate());
 
   const videoPreviewRef = useRef<VideoPreviewHandle>(null);
   const playbackRef = useRef<number | null>(null);
@@ -83,6 +96,14 @@ export default function Home() {
     setSettings,
     setClips,
   } = useProject();
+
+  // Overlay assets for frame templates - shared state passed to both FrameTemplatePanel and VideoPreview
+  const {
+    overlayAssets,
+    uploading: overlayUploading,
+    uploadOverlayAsset,
+    deleteOverlayAsset,
+  } = useOverlayAssets(session?.sessionId);
 
   // Global undo stack (snapshot of clips array before destructive operations)
   const undoStackRef = useRef<import('@/react-app/hooks/useProject').TimelineClip[][]>([]);
@@ -507,6 +528,29 @@ export default function Home() {
       return newRatio;
     });
   }, [setSettings]);
+
+  // Frame template handlers
+  const handleUpdateFrameTemplate = useCallback((updates: Partial<FrameTemplate>) => {
+    setCurrentFrameTemplate(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  const handleSaveFrameTemplate = useCallback(() => {
+    saveFrameTemplate(currentFrameTemplate);
+  }, [currentFrameTemplate, saveFrameTemplate]);
+
+  const handleSelectFrameTemplate = useCallback((template: FrameTemplate) => {
+    setCurrentFrameTemplate({ ...template, id: `template-${Date.now()}` });
+  }, []);
+
+  // Handle updating a single overlay (for timeline drag/resize)
+  const handleUpdateOverlay = useCallback((overlayId: string, updates: { startTime?: number; endTime?: number }) => {
+    setCurrentFrameTemplate(prev => ({
+      ...prev,
+      overlays: prev.overlays.map(o =>
+        o.id === overlayId ? { ...o, ...updates } : o
+      ),
+    }));
+  }, []);
 
   // Handle selecting clip
   const handleSelectClip = useCallback((clipId: string | null) => {
@@ -2019,7 +2063,13 @@ export default function Home() {
     }
 
     try {
-      const downloadUrl = await renderProject(false);
+      // For 9:16 aspect ratio, include frame template and overlay assets
+      const frameTemplateForRender = aspectRatio === '9:16' ? currentFrameTemplate : null;
+      const overlayAssetsForRender = aspectRatio === '9:16'
+        ? overlayAssets.map(a => ({ id: a.id, type: a.type, dataUrl: a.dataUrl }))
+        : undefined;
+
+      const downloadUrl = await renderProject(false, frameTemplateForRender, overlayAssetsForRender);
       // Trigger download
       const link = document.createElement('a');
       link.href = downloadUrl;
@@ -2031,7 +2081,7 @@ export default function Home() {
       console.error('Export failed:', error);
       alert(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [clips.length, renderProject]);
+  }, [clips.length, renderProject, aspectRatio, currentFrameTemplate, overlayAssets]);
 
   // Edit an existing animation with a new prompt
   const handleEditAnimation = useCallback(async (
@@ -2139,23 +2189,51 @@ export default function Home() {
   const isProcessing = loading || legacyProcessing;
   const currentStatus = status || legacyStatus;
 
+  // Keyboard shortcut for "?" to show help
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        e.preventDefault();
+        setShowKeyboardShortcuts(true);
+      }
+      if (e.key === 'Escape') {
+        setShowKeyboardShortcuts(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-white overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3 bg-zinc-900/50 border-b border-zinc-800/50 backdrop-blur-sm">
+      <header className="flex items-center justify-between px-6 py-3 bg-zinc-100/80 dark:bg-zinc-900/50 border-b border-zinc-200 dark:border-zinc-800/50 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-gradient-to-br from-orange-500 to-amber-500 rounded-lg flex items-center justify-center">
-              <Sparkles className="w-5 h-5" />
+              <Sparkles className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-xl font-bold bg-gradient-to-r from-orange-400 to-amber-400 bg-clip-text text-transparent">
               HyperEdit
             </h1>
           </div>
           {currentStatus && (
-            <span className="text-xs text-zinc-400 bg-zinc-800 px-2 py-1 rounded">
+            <span className="text-xs text-zinc-600 dark:text-zinc-400 bg-zinc-200 dark:bg-zinc-800 px-2 py-1 rounded">
               {currentStatus}
             </span>
+          )}
+          <ProjectTemplates
+            currentAspectRatio={aspectRatio}
+            onSelectTemplate={setAspectRatio}
+          />
+          {aspectRatio === '9:16' && (
+            <FrameTemplateSelector
+              templates={frameTemplates}
+              currentTemplateId={currentFrameTemplate.id}
+              onSelectTemplate={handleSelectFrameTemplate}
+              onDeleteTemplate={deleteFrameTemplate}
+            />
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -2164,7 +2242,7 @@ export default function Home() {
               <button
                 onClick={handleGenerateChapters}
                 disabled={isProcessing || !legacySession}
-                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                className="px-4 py-2 bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
               >
                 <ListOrdered className="w-4 h-4" />
                 Chapters
@@ -2173,7 +2251,7 @@ export default function Home() {
                 <button
                   onClick={handleExport}
                   disabled={isProcessing}
-                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                  className="px-4 py-2 bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
                 >
                   <Download className="w-4 h-4" />
                   Export
@@ -2181,7 +2259,14 @@ export default function Home() {
               )}
             </>
           )}
-          <button className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 rounded-lg text-sm font-medium transition-all">
+          <button
+            onClick={() => setShowKeyboardShortcuts(true)}
+            className="p-2 bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+            title="Keyboard Shortcuts (?)"
+          >
+            <HelpCircle className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
+          </button>
+          <button className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 rounded-lg text-sm font-medium text-white transition-all">
             AI Edit
           </button>
         </div>
@@ -2298,6 +2383,25 @@ export default function Home() {
               />
             </div>
 
+            {/* Frame Template Panel (shown in 9:16 mode when no clip selected) */}
+            {aspectRatio === '9:16' && !selectedClipId && (
+              <div className="h-1/2 border-t border-zinc-800/50 bg-zinc-900/50 overflow-hidden">
+                <FrameTemplatePanel
+                  template={currentFrameTemplate}
+                  savedTemplates={frameTemplates}
+                  projectDuration={duration}
+                  sessionId={session?.sessionId}
+                  onUpdateTemplate={handleUpdateFrameTemplate}
+                  onSaveTemplate={handleSaveFrameTemplate}
+                  onDeleteTemplate={deleteFrameTemplate}
+                  overlayAssets={overlayAssets}
+                  uploading={overlayUploading}
+                  onUploadAsset={uploadOverlayAsset}
+                  onDeleteAsset={deleteOverlayAsset}
+                />
+              </div>
+            )}
+
             {/* Clip/Caption Properties Panel (shown when clip is selected) */}
             {selectedClipId && (
               <div className="h-1/2 border-t border-zinc-800/50 bg-zinc-900/50 overflow-hidden">
@@ -2330,9 +2434,14 @@ export default function Home() {
                 layers={previewLayers}
                 isPlaying={isPlaying && !previewAssetId}
                 aspectRatio={aspectRatio}
+                currentTime={currentTime}
+                projectDuration={duration}
                 onLayerMove={handleLayerMove}
                 onLayerSelect={handleLayerSelect}
                 selectedLayerId={selectedClipId}
+                frameTemplate={aspectRatio === '9:16' ? currentFrameTemplate : null}
+                assets={assets}
+                overlayAssets={overlayAssets}
               />
             ) : clips.length > 0 ? (
               // Assets exist but playhead is not over any clip
@@ -2385,6 +2494,10 @@ export default function Home() {
               onDeleteAllCaptionClips={handleClearAllCaptionClips}
               getCaptionData={getCaptionData}
               onUndo={handleGlobalUndo}
+              frameOverlays={aspectRatio === '9:16' ? currentFrameTemplate.overlays : []}
+              onUpdateOverlay={handleUpdateOverlay}
+              selectedOverlayId={selectedOverlayId}
+              onSelectOverlay={setSelectedOverlayId}
             />
           </ResizableVerticalPanel>
         </div>
@@ -2519,6 +2632,13 @@ export default function Home() {
           onGifAdded={handleGifAdded}
         />
       )}
+
+      {/* Keyboard Shortcuts Modal */}
+      <KeyboardShortcuts
+        isOpen={showKeyboardShortcuts}
+        onClose={() => setShowKeyboardShortcuts(false)}
+      />
+
     </div>
   );
 }

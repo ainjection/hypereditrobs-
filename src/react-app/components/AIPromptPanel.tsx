@@ -303,6 +303,31 @@ interface AIPromptPanelProps {
   onWaveformData?: (assetId: string) => Promise<{ samples: number[]; sampleRate: number }>;
 }
 
+// Helper to parse rate limit errors and return user-friendly message
+function parseRateLimitError(error: unknown): { isRateLimit: boolean; retryAfter?: number; message: string } {
+  const errorStr = error instanceof Error ? error.message : String(error);
+
+  // Check for rate limit indicators
+  const isRateLimit = errorStr.includes('429') ||
+                      errorStr.toLowerCase().includes('quota') ||
+                      errorStr.toLowerCase().includes('rate') ||
+                      errorStr.toLowerCase().includes('exceeded');
+
+  if (!isRateLimit) {
+    return { isRateLimit: false, message: errorStr };
+  }
+
+  // Try to extract retry time
+  const retryMatch = errorStr.match(/retry\s*(?:in|after)?\s*(\d+(?:\.\d+)?)\s*s/i);
+  const retryAfter = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : undefined;
+
+  const message = retryAfter
+    ? `⏳ API rate limit reached. Please wait ${retryAfter} seconds and try again.\n\nTip: Your request was not lost - just retry with the same prompt.`
+    : `⏳ API rate limit reached. Please wait a moment and try again.\n\nTip: Consider using a paid API plan for higher limits.`;
+
+  return { isRateLimit: true, retryAfter, message };
+}
+
 export default function AIPromptPanel({
   onApplyEdit,
   onExtractKeywordsAndAddGifs,
@@ -1220,9 +1245,13 @@ export default function AIPromptPanel({
 
     } catch (error) {
       console.error('Animation render error:', error);
+      const rateLimitInfo = parseRateLimitError(error);
       setChatHistory(prev => [...prev, {
         type: 'assistant',
-        text: `❌ Failed to render animation: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        text: rateLimitInfo.isRateLimit
+          ? rateLimitInfo.message
+          : `❌ Failed to render animation: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        retryAfter: rateLimitInfo.retryAfter,
       }]);
     } finally {
       setIsProcessing(false);
@@ -1407,11 +1436,14 @@ export default function AIPromptPanel({
 
     // If user has selected an AI animation clip on the main timeline and wants to edit it
     if (ctx.selectedClipIsAiAnimation && !ctx.isOnEditTab) {
+      // Don't intercept audio/noise-related requests - those should go to audio-clean workflow
+      const isAudioRequest = lower.includes('noise') || lower.includes('audio') ||
+                             lower.includes('sound') || lower.includes('volume');
       const isEditIntent = lower.includes('edit') || lower.includes('change') ||
                           lower.includes('modify') || lower.includes('update') ||
                           lower.includes('make it') || lower.includes('adjust') ||
                           lower.includes('add') || lower.includes('remove');
-      if (isEditIntent) {
+      if (isEditIntent && !isAudioRequest) {
         return 'edit-animation';
       }
     }
@@ -1429,7 +1461,11 @@ export default function AIPromptPanel({
                                  lower.includes('subtitle') ||
                                  lower.includes('dead air') ||
                                  lower.includes('silence') ||
-                                 lower.includes('chapter');
+                                 lower.includes('chapter') ||
+                                 lower.includes('noise') ||
+                                 lower.includes('audio') ||
+                                 lower.includes('sound') ||
+                                 lower.includes('volume');
 
       // If not explicitly about main video and not a video-only feature, edit the animation
       if (!isAboutMainVideo && !isVideoOnlyFeature) {
@@ -2549,9 +2585,13 @@ export default function AIPromptPanel({
 
     } catch (error) {
       console.error('Custom animation workflow error:', error);
+      const rateLimitInfo = parseRateLimitError(error);
       setChatHistory(prev => [...prev, {
         type: 'assistant',
-        text: `❌ Failed to create animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nTry simplifying your description or being more specific about what you want to animate.`,
+        text: rateLimitInfo.isRateLimit
+          ? rateLimitInfo.message
+          : `❌ Failed to create animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nTry simplifying your description or being more specific about what you want to animate.`,
+        retryAfter: rateLimitInfo.retryAfter,
       }]);
     } finally {
       setIsProcessing(false);
@@ -2620,9 +2660,13 @@ export default function AIPromptPanel({
 
     } catch (error) {
       console.error('Edit animation workflow error:', error);
+      const rateLimitInfo = parseRateLimitError(error);
       setChatHistory(prev => [...prev, {
         type: 'assistant',
-        text: `❌ Failed to edit animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nTry a simpler edit request or check that the animation is AI-generated.`,
+        text: rateLimitInfo.isRateLimit
+          ? rateLimitInfo.message
+          : `❌ Failed to edit animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nTry a simpler edit request or check that the animation is AI-generated.`,
+        retryAfter: rateLimitInfo.retryAfter,
       }]);
     } finally {
       setIsProcessing(false);
@@ -2821,9 +2865,13 @@ export default function AIPromptPanel({
 
     } catch (error) {
       console.error('Transcript animation error:', error);
+      const rateLimitInfo = parseRateLimitError(error);
       setChatHistory(prev => [...prev, {
         type: 'assistant',
-        text: `❌ Failed to create transcript animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nMake sure you have a video uploaded and the FFmpeg server is running.`,
+        text: rateLimitInfo.isRateLimit
+          ? rateLimitInfo.message
+          : `❌ Failed to create transcript animation: ${error instanceof Error ? error.message : 'Unknown error'}\n\nMake sure you have a video uploaded and the FFmpeg server is running.`,
+        retryAfter: rateLimitInfo.retryAfter,
       }]);
     } finally {
       setIsProcessing(false);
@@ -2895,9 +2943,13 @@ export default function AIPromptPanel({
 
     } catch (error) {
       console.error('Batch animations error:', error);
+      const rateLimitInfo = parseRateLimitError(error);
       setChatHistory(prev => [...prev, {
         type: 'assistant',
-        text: `❌ Failed to generate animations: ${error instanceof Error ? error.message : 'Unknown error'}\n\nMake sure you have a video uploaded and the FFmpeg server is running.`,
+        text: rateLimitInfo.isRateLimit
+          ? rateLimitInfo.message
+          : `❌ Failed to generate animations: ${error instanceof Error ? error.message : 'Unknown error'}\n\nMake sure you have a video uploaded and the FFmpeg server is running.`,
+        retryAfter: rateLimitInfo.retryAfter,
       }]);
     } finally {
       setIsProcessing(false);

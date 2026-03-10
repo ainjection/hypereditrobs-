@@ -1,5 +1,5 @@
-import { useRef, useCallback } from 'react';
-import { Film, Image, Music, Upload, Trash2, Plus, Sparkles, ImageIcon } from 'lucide-react';
+import { useRef, useCallback, useState, useMemo } from 'react';
+import { Film, Image, Music, Upload, Trash2, Plus, Sparkles, ImageIcon, ExternalLink, ChevronDown, ChevronRight, Video, Volume2, Palette, Search, X } from 'lucide-react';
 import type { Asset } from '@/react-app/hooks/useProject';
 
 interface AssetLibraryProps {
@@ -44,6 +44,15 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const FREE_RESOURCES = [
+  { name: 'Pexels', url: 'https://www.pexels.com/', icon: Video, color: 'from-green-500 to-emerald-500', desc: 'Free videos & photos' },
+  { name: 'Pixabay', url: 'https://pixabay.com/', icon: Image, color: 'from-green-600 to-teal-500', desc: 'Videos, images, music' },
+  { name: 'Unsplash', url: 'https://unsplash.com/', icon: Image, color: 'from-gray-600 to-gray-500', desc: 'High-quality photos' },
+  { name: 'Mixkit', url: 'https://mixkit.co/', icon: Video, color: 'from-purple-500 to-indigo-500', desc: 'Video clips & music' },
+  { name: 'Freesound', url: 'https://freesound.org/', icon: Volume2, color: 'from-orange-500 to-red-500', desc: 'Sound effects & audio' },
+  { name: 'LottieFiles', url: 'https://lottiefiles.com/', icon: Palette, color: 'from-cyan-500 to-blue-500', desc: 'Free animations' },
+];
+
 export default function AssetLibrary({
   assets,
   onUpload,
@@ -55,6 +64,20 @@ export default function AssetLibrary({
   onOpenGifSearch,
 }: AssetLibraryProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'video' | 'image' | 'audio'>('all');
+
+  // Filter and sort assets
+  const filteredAssets = useMemo(() => {
+    return assets.filter(asset => {
+      // Type filter
+      if (typeFilter !== 'all' && asset.type !== typeFilter) return false;
+      // Search filter
+      if (searchQuery && !asset.filename.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      return true;
+    });
+  }, [assets, searchQuery, typeFilter]);
 
   const handleFileSelect = useCallback(() => {
     fileInputRef.current?.click();
@@ -90,7 +113,25 @@ export default function AssetLibrary({
     <div className="flex flex-col h-full bg-zinc-900/50 border-r border-zinc-800/50">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800/50">
-        <span className="text-xs font-medium text-zinc-400">Assets</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-zinc-400">Assets</span>
+          <a
+            href="https://papaya-cucurucho-c76b49.netlify.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1 px-2.5 py-1 min-w-[70px] bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 rounded text-[10px] font-medium text-white transition-all"
+          >
+            My Site <ExternalLink className="w-2.5 h-2.5" />
+          </a>
+          <a
+            href="https://aiingection.netlify.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1 px-2.5 py-1 min-w-[70px] bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded text-[10px] font-medium text-white transition-all"
+          >
+            Prompts <ExternalLink className="w-2.5 h-2.5" />
+          </a>
+        </div>
         <div className="flex items-center gap-1.5">
           {onOpenGifSearch && (
             <button
@@ -111,6 +152,48 @@ export default function AssetLibrary({
           </button>
         </div>
       </div>
+
+      {/* Search & Filter Bar */}
+      {assets.length > 0 && (
+        <div className="px-2 py-2 border-b border-zinc-800/50 space-y-2">
+          {/* Search Input */}
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search assets..."
+              className="w-full pl-7 pr-7 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-orange-500/50"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Type Filter Pills */}
+          <div className="flex gap-1">
+            {(['all', 'video', 'image', 'audio'] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => setTypeFilter(type)}
+                className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                  typeFilter === type
+                    ? 'bg-orange-500 text-white'
+                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                }`}
+              >
+                {type === 'all' ? 'All' : type.charAt(0).toUpperCase() + type.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Hidden file input */}
       <input
@@ -138,9 +221,22 @@ export default function AssetLibrary({
               Drop files here or click to upload
             </span>
           </div>
+        ) : filteredAssets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full p-4">
+            <Search className="w-8 h-8 text-zinc-600 mb-2" />
+            <span className="text-xs text-zinc-500 text-center">
+              No assets match your search
+            </span>
+            <button
+              onClick={() => { setSearchQuery(''); setTypeFilter('all'); }}
+              className="mt-2 text-xs text-orange-400 hover:text-orange-300"
+            >
+              Clear filters
+            </button>
+          </div>
         ) : (
           <div className="grid grid-cols-2 gap-2">
-            {assets.map(asset => (
+            {filteredAssets.map(asset => (
               <AssetCard
                 key={asset.id}
                 asset={asset}
@@ -166,6 +262,42 @@ export default function AssetLibrary({
         {uploading && (
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
             <div className="animate-spin w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full" />
+          </div>
+        )}
+      </div>
+
+      {/* Free Resources Section */}
+      <div className="border-t border-zinc-800/50">
+        <button
+          onClick={() => setResourcesOpen(!resourcesOpen)}
+          className="flex items-center justify-between w-full px-3 py-2 hover:bg-zinc-800/30 transition-colors"
+        >
+          <span className="text-xs font-medium text-zinc-400">Free Resources</span>
+          {resourcesOpen ? (
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
+          )}
+        </button>
+
+        {resourcesOpen && (
+          <div className="px-2 pb-2 grid grid-cols-2 gap-1.5">
+            {FREE_RESOURCES.map((resource) => {
+              const Icon = resource.icon;
+              return (
+                <a
+                  key={resource.name}
+                  href={resource.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`flex items-center gap-2 px-2 py-1.5 bg-gradient-to-r ${resource.color} rounded text-[10px] font-medium text-white hover:opacity-90 transition-opacity`}
+                  title={resource.desc}
+                >
+                  <Icon className="w-3 h-3" />
+                  {resource.name}
+                </a>
+              );
+            })}
           </div>
         )}
       </div>
