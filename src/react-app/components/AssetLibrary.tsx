@@ -51,6 +51,7 @@ const FREE_RESOURCES = [
   { name: 'Mixkit', url: 'https://mixkit.co/', icon: Video, color: 'from-purple-500 to-indigo-500', desc: 'Video clips & music' },
   { name: 'Freesound', url: 'https://freesound.org/', icon: Volume2, color: 'from-orange-500 to-red-500', desc: 'Sound effects & audio' },
   { name: 'LottieFiles', url: 'https://lottiefiles.com/', icon: Palette, color: 'from-cyan-500 to-blue-500', desc: 'Free animations' },
+  { name: 'Remotion FX', url: 'https://remotion-prompt-builder-dvvbtm238-pprholdings123-6893s-projects.vercel.app/effects', icon: Sparkles, color: 'from-pink-500 to-rose-500', desc: 'Remotion effects builder' },
 ];
 
 export default function AssetLibrary({
