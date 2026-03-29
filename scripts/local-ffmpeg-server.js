@@ -1025,6 +1025,173 @@ async function handleAutoEnhance(req, res) {
   }
 }
 
+// Copy video pipeline (KnowSense style)
+async function handleCopyVideo(req, res) {
+  try {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const { url, template = 'knowsense', sessionId } = JSON.parse(body || '{}');
+
+    if (!url) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'url is required' }));
+      return;
+    }
+
+    console.log(`\n[copy-video] Starting pipeline: ${url} (template: ${template})`);
+
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+
+    // Run the copy-video-v2 script
+    const scriptPath = join(import.meta.dirname, 'copy-video-v2.mjs');
+    const remotionDir = join(import.meta.dirname, '..');
+
+    // Check if script exists in remotion-automation
+    const possibleScripts = [
+      scriptPath,
+      join(process.env.USERPROFILE || '', '.openclaw', 'workspace', 'remotion-automation', 'scripts', 'copy-video-v2.mjs'),
+    ];
+    const actualScript = possibleScripts.find(p => existsSync(p));
+
+    if (!actualScript) {
+      res.end(JSON.stringify({ error: 'copy-video-v2.mjs not found' }));
+      return;
+    }
+
+    const remotionRoot = join(actualScript, '..', '..');
+
+    // Run async so we don't block the server
+    const { spawn: spawnLocal } = await import('child_process');
+
+    // Respond immediately with a job ID
+    const copyJobId = randomUUID().substring(0, 8);
+    global.__copyJobs = global.__copyJobs || {};
+    global.__copyJobs[copyJobId] = { status: 'running', url, startedAt: Date.now() };
+
+    res.end(JSON.stringify({ jobId: copyJobId, status: 'running', message: 'Pipeline started. Poll /copy-video/status?jobId=' + copyJobId }));
+
+    // Spawn the pipeline process
+    const proc = spawnLocal('node', [actualScript, url, template], {
+      cwd: remotionRoot,
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); console.log(`[copy-video] ${d.toString().trim()}`); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    proc.on('close', async (code) => {
+      if (code === 0) {
+        const doneMatch = stdout.match(/Output: (.+\.mp4)/);
+        const titleMatch = stdout.match(/"([^"]+)"/);
+        const durationMatch = stdout.match(/(\d+):(\d+) \|/);
+        const slidesMatch = stdout.match(/(\d+) slides/);
+        const videoPath = doneMatch ? doneMatch[1].trim() : null;
+
+        let assetId = null;
+        let finalSessionId = sessionId;
+
+        // Auto-import into a session
+        if (videoPath && existsSync(videoPath)) {
+          // Find or create a session
+          let session = sessionId ? getSession(sessionId) : null;
+          if (!session) {
+            // Use the most recent session, or create a new one
+            let latestSession = null;
+            for (const [sid, s] of sessions) {
+              if (!latestSession || s.createdAt > latestSession.createdAt) {
+                latestSession = s;
+                finalSessionId = sid;
+              }
+            }
+            session = latestSession;
+
+            // If still no session, create one
+            if (!session) {
+              finalSessionId = randomUUID();
+              const sessionDir = join(TEMP_DIR, `sessions/${finalSessionId}`);
+              const assetsDir = join(sessionDir, 'assets');
+              const rendersDir = join(sessionDir, 'renders');
+              mkdirSync(assetsDir, { recursive: true });
+              mkdirSync(rendersDir, { recursive: true });
+              session = {
+                id: finalSessionId,
+                dir: sessionDir,
+                assetsDir,
+                rendersDir,
+                assets: new Map(),
+                transcriptCache: new Map(),
+                project: { clips: [], settings: { width: 1280, height: 720, fps: 30 }, captionData: {} },
+                createdAt: Date.now(),
+              };
+              sessions.set(finalSessionId, session);
+              console.log(`[copy-video] Created new session: ${finalSessionId}`);
+            }
+          }
+
+          if (session) {
+            try {
+              assetId = randomUUID();
+              const destPath = join(session.assetsDir, `${assetId}.mp4`);
+              const { copyFileSync: cpSync } = await import('fs');
+              cpSync(videoPath, destPath);
+
+              // Get duration
+              const { execSync: es } = await import('child_process');
+              const dur = parseFloat(es(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${destPath}"`, { encoding: 'utf8' }).trim()) || 120;
+
+              // Generate thumbnail
+              const thumbPath = join(session.assetsDir, `${assetId}_thumb.jpg`);
+              try {
+                es(`ffmpeg -y -i "${destPath}" -vf "scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2" -frames:v 1 "${thumbPath}"`, { stdio: 'pipe' });
+              } catch {}
+
+              // Register asset
+              const { statSync: ss } = await import('fs');
+              const stats = ss(destPath);
+              session.assets.set(assetId, {
+                id: assetId,
+                type: 'video',
+                filename: (titleMatch ? titleMatch[1] : 'copied-video').replace(/[^a-zA-Z0-9\s-]/g, '').substring(0, 40) + '.mp4',
+                path: destPath,
+                thumbPath: existsSync(thumbPath) ? thumbPath : null,
+                duration: dur,
+                size: stats.size,
+                width: 1280,
+                height: 720,
+                createdAt: Date.now(),
+              });
+              console.log(`[copy-video] Asset registered: ${assetId} (${dur.toFixed(1)}s)`);
+            } catch (importErr) {
+              console.error(`[copy-video] Asset import failed:`, importErr.message);
+            }
+          }
+        }
+
+        global.__copyJobs[copyJobId] = {
+          status: 'complete',
+          videoPath,
+          title: titleMatch ? titleMatch[1] : 'Untitled',
+          duration: durationMatch ? parseInt(durationMatch[1]) * 60 + parseInt(durationMatch[2]) : 0,
+          slides: slidesMatch ? parseInt(slidesMatch[1]) : 0,
+          assetId,
+          sessionId: finalSessionId,
+        };
+        console.log(`[copy-video] Complete: ${videoPath}${assetId ? ` (asset: ${assetId})` : ''}`);
+      } else {
+        global.__copyJobs[copyJobId] = { status: 'failed', error: stderr.substring(0, 300) || `Exit code ${code}` };
+        console.error(`[copy-video] Failed: ${stderr.substring(0, 200)}`);
+      }
+    });
+  } catch (error) {
+    console.error('[copy-video] Error:', error);
+    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
 // Generate chapters from video using AI
 async function handleGenerateChapters(req, res) {
   const jobId = randomUUID();
@@ -3144,6 +3311,19 @@ requestAnimationFrame(update);
     for (const { clip, asset, idx } of videoInputIndices) {
       // Only extract audio from real video files (not images, not AI-generated Remotion renders)
       if (asset.type !== 'video' || asset.aiGenerated) continue;
+
+      // Check if video actually has an audio stream (skip muted videos)
+      let hasAudioStream = true;
+      try {
+        const probeResult = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${asset.path}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+        hasAudioStream = probeResult.length > 0;
+      } catch { hasAudioStream = false; }
+
+      if (!hasAudioStream) {
+        console.log(`[${sessionId}] Skipping audio from ${asset.filename} - no audio stream (muted video)`);
+        continue;
+      }
+
       const inPoint = clip.inPoint || 0;
       const outPoint = clip.outPoint || asset.duration;
       const delayMs = Math.floor(clip.start * 1000);
@@ -12558,6 +12738,13 @@ const server = http.createServer(async (req, res) => {
     await handleGenerateChapters(req, res);
   } else if (req.method === 'POST' && path === '/auto-enhance') {
     await handleAutoEnhance(req, res);
+  } else if (req.method === 'POST' && path === '/copy-video') {
+    await handleCopyVideo(req, res);
+  } else if (req.method === 'GET' && path.startsWith('/copy-video/status')) {
+    const jobId = new URL(req.url, 'http://localhost').searchParams.get('jobId');
+    const job = (global.__copyJobs || {})[jobId];
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(job || { status: 'not_found' }));
   } else if (req.method === 'GET' && path === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', ffmpeg: 'native', sessions: sessions.size }));

@@ -1425,6 +1425,7 @@ export default function AIPromptPanel({
     | 'ffmpeg-edit'         // Direct FFmpeg video manipulation
     | 'auto-enhance'       // FrameForge transcript intelligence + overlay suggestions
     | 'frameforge-style'   // Direct FrameForge animation with specific style + timestamp
+    | 'copy-video'         // Copy a YouTube video using KnowSense pipeline
     | 'unknown';            // Need to ask for clarification
 
   interface DirectorContext {
@@ -1579,6 +1580,11 @@ export default function AIPromptPanel({
         (lower.includes('remove') && (lower.includes('filler') || lower.includes('ums') || lower.includes('uhs'))) ||
         lower.includes('caption cleanup') || lower.includes('caption clean')) {
       return 'caption-polish';
+    }
+
+    // Copy KnowSense video pipeline
+    if ((lower.includes('copy') || lower.includes('knowsense') || lower.includes('know sense')) && lower.includes('http')) {
+      return 'copy-video' as WorkflowType;
     }
 
     // FrameForge style-specific animation (e.g. "at 2:33 add neon glow about AI")
@@ -3509,6 +3515,123 @@ export default function AIPromptPanel({
 
     // Auto-enhance (FrameForge transcript intelligence)
     // FrameForge style-specific animation
+    // Copy video pipeline (KnowSense)
+    if (workflow === ('copy-video' as WorkflowType)) {
+      // Extract URL from prompt
+      const urlMatch = prompt.match(/https?:\/\/[^\s]+/);
+      if (!urlMatch) {
+        setChatHistory(prev => [...prev, { type: 'assistant', text: 'Please include a YouTube URL. Example: "copy knowsense https://youtube.com/watch?v=..."' }]);
+        return;
+      }
+
+      setIsProcessing(true);
+      setChatHistory(prev => [...prev, {
+        type: 'assistant',
+        text: `🎬 **Copying video with KnowSense pipeline...**\n\nURL: ${urlMatch[0]}\n\nThis will:\n1. Download and analyse the video\n2. Generate matching illustrations\n3. Create voiceover\n4. Build slideshow with transitions\n\nThis takes 10-15 minutes. I'll let you know when it's ready.`,
+        isProcessingGifs: true,
+      }]);
+
+      try {
+        // Start the pipeline (returns immediately with job ID)
+        // Get current session ID from health endpoint (sessions are tracked server-side)
+        let activeSessionId = null;
+        try {
+          const healthResp = await fetch('http://localhost:3333/health');
+          const healthData = await healthResp.json();
+          // If we have assets in state, find the session that matches
+          if (assets && assets.length > 0) {
+            // Try to get session from an asset's thumbnail URL
+            const thumbUrl = assets[0]?.thumbnailUrl || '';
+            const sessionMatch = thumbUrl.match(/session\/([^/]+)\//);
+            if (sessionMatch) activeSessionId = sessionMatch[1];
+          }
+        } catch {}
+
+        const response = await fetch('http://localhost:3333/copy-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: urlMatch[0], template: 'knowsense', sessionId: activeSessionId }),
+        });
+
+        const startData = await response.json();
+        if (!startData.jobId) throw new Error(startData.error || 'Failed to start pipeline');
+
+        // Poll for completion
+        const jobId = startData.jobId;
+        let attempts = 0;
+        const maxAttempts = 600; // 50 minutes (5s intervals)
+
+        while (attempts < maxAttempts) {
+          await new Promise(r => setTimeout(r, 5000));
+          attempts++;
+
+          const statusResp = await fetch(`http://localhost:3333/copy-video/status?jobId=${jobId}`);
+          const status = await statusResp.json();
+
+          if (status.status === 'complete') {
+            const hasAsset = !!status.assetId;
+
+            setChatHistory(prev => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.isProcessingGifs) {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  text: hasAsset
+                    ? `✅ **Video created and imported!**\n\n"${status.title}"\n${status.slides} slides | ${Math.floor((status.duration||0)/60)}:${String(Math.floor((status.duration||0)%60)).padStart(2,'0')}\n\nReloading to load it into the editor...`
+                    : `✅ **Video created!**\n\n"${status.title}"\n${status.slides} slides | ${Math.floor((status.duration||0)/60)}:${String(Math.floor((status.duration||0)%60)).padStart(2,'0')}\n\nFile: ${status.videoPath}\n\nDrag this file into HyperEdit to add captions.`,
+                  isProcessingGifs: false,
+                  applied: true,
+                };
+              }
+              return updated;
+            });
+
+            // Auto-reload to pick up the imported asset
+            if (hasAsset) {
+              setTimeout(() => window.location.reload(), 2000);
+            }
+            break;
+          } else if (status.status === 'failed') {
+            throw new Error(status.error || 'Pipeline failed');
+          }
+
+          // Update progress message every 30 seconds
+          if (attempts % 6 === 0) {
+            setChatHistory(prev => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.isProcessingGifs) {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  text: `🎬 **Still working...** (${Math.floor(attempts * 5 / 60)} min elapsed)\n\nGenerating images, voiceover, and rendering slideshow...`,
+                };
+              }
+              return updated;
+            });
+          }
+        }
+
+        if (attempts >= maxAttempts) throw new Error('Pipeline timed out after 50 minutes');
+
+      } catch (error) {
+        setChatHistory(prev => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (updated[lastIdx]?.isProcessingGifs) {
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              text: `❌ Pipeline failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              isProcessingGifs: false,
+            };
+          }
+          return updated;
+        });
+      }
+      setIsProcessing(false);
+      return;
+    }
+
     if (workflow === 'frameforge-style') {
       if (!hasVideo) {
         setChatHistory(prev => [...prev, { type: 'assistant', text: 'Please upload a video first.' }]);
@@ -4221,7 +4344,7 @@ export default function AIPromptPanel({
           <div className="text-center text-sm text-zinc-500 py-8">
             {hasVideo
               ? "No edits yet. Use Quick Actions below to get started!"
-              : 'Upload a video first to start editing with AI'}
+              : 'Upload a video to edit, or type "copy knowsense [youtube url]" to create one'}
           </div>
         ) : (
           chatHistory.map((message, idx) => (
@@ -5034,10 +5157,10 @@ export default function AIPromptPanel({
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder={hasVideo ? "Describe your edit..." : "Upload a video first..."}
+            placeholder={hasVideo ? "Describe your edit..." : "Upload a video or type 'copy knowsense [url]'..."}
             className="w-full px-3 pt-3 pb-2 bg-transparent text-sm resize-none focus:outline-none placeholder:text-zinc-500"
             rows={2}
-            disabled={isProcessing || !hasVideo}
+            disabled={isProcessing}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -5275,7 +5398,7 @@ export default function AIPromptPanel({
             {/* Send Button */}
             <button
               type="submit"
-              disabled={!prompt.trim() || isProcessing || !hasVideo}
+              disabled={!prompt.trim() || isProcessing}
               className="w-8 h-8 bg-gradient-to-r from-orange-500 to-amber-500 disabled:from-zinc-700 disabled:to-zinc-700 rounded-lg flex items-center justify-center transition-all hover:shadow-lg hover:shadow-orange-500/50 disabled:shadow-none"
             >
               {isProcessing ? (
