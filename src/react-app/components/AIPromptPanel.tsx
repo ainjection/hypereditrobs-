@@ -1001,10 +1001,13 @@ export default function AIPromptPanel({
         { icon: Sparkles, text: 'Neon glow about my intro' },
         { icon: Sparkles, text: 'Glassmorphism about key features' },
         { icon: Sparkles, text: 'Bold typography about the main point' },
-        { icon: Sparkles, text: 'Data dashboard about the stats' },
-        { icon: Sparkles, text: 'Particle burst about the reveal' },
-        { icon: Sparkles, text: 'Cinematic bars about the conclusion' },
-        { icon: Sparkles, text: 'Floating bubbles about the ideas' },
+      ],
+    },
+    {
+      label: '🎬 Video Pipelines',
+      items: [
+        { icon: Film, text: 'copy knowsense https://youtube.com/...' },
+        { icon: Film, text: 'explainer cartoon https://youtube.com/...' },
       ],
     },
     {
@@ -1580,6 +1583,11 @@ export default function AIPromptPanel({
         (lower.includes('remove') && (lower.includes('filler') || lower.includes('ums') || lower.includes('uhs'))) ||
         lower.includes('caption cleanup') || lower.includes('caption clean')) {
       return 'caption-polish';
+    }
+
+    // Cartoon explainer video pipeline
+    if ((lower.includes('explainer') || lower.includes('cartoon') || lower.includes('casual finance') || lower.includes('casual economics')) && lower.includes('http')) {
+      return 'copy-video' as WorkflowType; // Reuse same workflow, detect type from URL context
     }
 
     // Copy KnowSense video pipeline
@@ -3547,10 +3555,15 @@ export default function AIPromptPanel({
           }
         } catch {}
 
-        const response = await fetch('http://localhost:3333/copy-video', {
+        // Detect if explainer or slideshow style
+        const isExplainer = /explainer|cartoon|casual finance|casual economics|animated|stick figure/i.test(prompt);
+        const endpoint = isExplainer ? 'explainer-video' : 'copy-video';
+        const template = isExplainer ? 'director' : 'knowsense';
+
+        const response = await fetch(`http://localhost:3333/${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: urlMatch[0], template: 'knowsense', sessionId: activeSessionId }),
+          body: JSON.stringify({ url: urlMatch[0], template, sessionId: activeSessionId }),
         });
 
         const startData = await response.json();

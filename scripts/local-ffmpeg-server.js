@@ -1192,6 +1192,109 @@ async function handleCopyVideo(req, res) {
   }
 }
 
+// Cartoon explainer video from YouTube URL
+async function handleExplainerVideo(req, res) {
+  try {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const { url, sessionId } = JSON.parse(body || '{}');
+
+    if (!url) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'url is required' }));
+      return;
+    }
+
+    console.log(`\n[explainer] Starting: ${url}`);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+
+    const copyJobId = randomUUID().substring(0, 8);
+    global.__copyJobs = global.__copyJobs || {};
+    global.__copyJobs[copyJobId] = { status: 'running', url, startedAt: Date.now() };
+
+    res.end(JSON.stringify({ jobId: copyJobId, status: 'running' }));
+
+    // Find the explainer script
+    const possibleScripts = [
+      join(process.env.USERPROFILE || '', '.openclaw', 'workspace', 'remotion-automation', 'scripts', 'build-casual-economics.mjs'),
+    ];
+    const actualScript = possibleScripts.find(p => existsSync(p));
+
+    if (!actualScript) {
+      global.__copyJobs[copyJobId] = { status: 'failed', error: 'Explainer script not found' };
+      return;
+    }
+
+    const remotionRoot = join(actualScript, '..', '..');
+    const { spawn: spawnLocal } = await import('child_process');
+
+    // The script reads source.mp4 from a specific dir, so we need to set it up
+    // For now, reuse the generic approach - download video first then run
+    let stdout = '';
+    let stderr = '';
+    const proc = spawnLocal('node', [actualScript], {
+      cwd: remotionRoot,
+      env: { ...process.env, EXPLAINER_URL: url },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    proc.stdout.on('data', d => { stdout += d.toString(); console.log(`[explainer] ${d.toString().trim()}`); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    proc.on('close', async (code) => {
+      if (code === 0) {
+        const doneMatch = stdout.match(/Output: (.+\.mp4)/) || stdout.match(/FULL VIDEO: .+\n(.+\.mp4)/);
+        const videoPath = doneMatch ? doneMatch[1].trim() : null;
+        const durMatch = stdout.match(/(\d+):(\d+) \|/);
+
+        let assetId = null;
+        let finalSessionId = sessionId;
+
+        // Auto-import
+        if (videoPath && existsSync(videoPath)) {
+          let session = sessionId ? getSession(sessionId) : null;
+          if (!session) {
+            for (const [sid, s] of sessions) {
+              if (!session || s.createdAt > session.createdAt) { session = s; finalSessionId = sid; }
+            }
+          }
+          if (session) {
+            try {
+              assetId = randomUUID();
+              const destPath = join(session.assetsDir, `${assetId}.mp4`);
+              const { copyFileSync: cpSync } = await import('fs');
+              cpSync(videoPath, destPath);
+              const dur = parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${destPath}"`, { encoding: 'utf8' }).trim()) || 300;
+              const thumbPath = join(session.assetsDir, `${assetId}_thumb.jpg`);
+              try { execSync(`ffmpeg -y -i "${destPath}" -vf "scale=160:90" -frames:v 1 "${thumbPath}"`, { stdio: 'pipe' }); } catch {}
+              const { statSync: ss } = await import('fs');
+              session.assets.set(assetId, {
+                id: assetId, type: 'video', filename: 'explainer-video.mp4', path: destPath,
+                thumbPath: existsSync(thumbPath) ? thumbPath : null, duration: dur,
+                size: ss(destPath).size, width: 1280, height: 720, createdAt: Date.now(),
+              });
+            } catch (e) { console.error('[explainer] Import failed:', e.message); }
+          }
+        }
+
+        global.__copyJobs[copyJobId] = {
+          status: 'complete', videoPath,
+          duration: durMatch ? parseInt(durMatch[1]) * 60 + parseInt(durMatch[2]) : 0,
+          assetId, sessionId: finalSessionId,
+        };
+        console.log(`[explainer] Complete: ${videoPath}`);
+      } else {
+        global.__copyJobs[copyJobId] = { status: 'failed', error: stderr.substring(0, 300) };
+        console.error(`[explainer] Failed`);
+      }
+    });
+  } catch (error) {
+    console.error('[explainer] Error:', error);
+    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ error: error.message }));
+  }
+}
+
 // Generate chapters from video using AI
 async function handleGenerateChapters(req, res) {
   const jobId = randomUUID();
@@ -12740,6 +12843,8 @@ const server = http.createServer(async (req, res) => {
     await handleAutoEnhance(req, res);
   } else if (req.method === 'POST' && path === '/copy-video') {
     await handleCopyVideo(req, res);
+  } else if (req.method === 'POST' && path === '/explainer-video') {
+    await handleExplainerVideo(req, res);
   } else if (req.method === 'GET' && path.startsWith('/copy-video/status')) {
     const jobId = new URL(req.url, 'http://localhost').searchParams.get('jobId');
     const job = (global.__copyJobs || {})[jobId];
