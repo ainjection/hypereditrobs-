@@ -3,6 +3,9 @@ import { Composition } from 'remotion';
 import { DynamicAnimation } from './DynamicAnimation';
 import { YouTubeIntro } from './YouTubeIntro';
 import { YouTubeIntroEpic } from './YouTubeIntroEpic';
+import { BlockCompositions } from './blocks/register';
+import { HeroCompositions } from './hero-register';
+import { ScriptRunner } from './ScriptRunner';
 
 // Props passed from the CLI via --props
 export interface DynamicAnimationProps {
@@ -208,6 +211,23 @@ export const RemotionRoot: React.FC = () => {
         fps={30}
         width={1920}
         height={1080}
+      />
+      {/* ─── Ported from video-agent ────────────────────────────────── */}
+      <BlockCompositions />
+      <HeroCompositions />
+      <Composition
+        id="ScriptRunner"
+        component={ScriptRunner}
+        fps={30}
+        width={1920}
+        height={1080}
+        durationInFrames={150}
+        defaultProps={{ scenes: [], fontSize: 140, textColor: '#ffffff', bgColors: ['#0f172a', '#1e293b'] }}
+        calculateMetadata={({ props }) => {
+          const scenes = (props as { scenes?: Array<{ durationInFrames: number }> }).scenes || [];
+          const total = scenes.reduce((s, sc) => s + (sc.durationInFrames || 0), 0);
+          return { durationInFrames: Math.max(30, total) };
+        }}
       />
     </>
   );

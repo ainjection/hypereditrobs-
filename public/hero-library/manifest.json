@@ -1,0 +1,64 @@
+{
+  "clips": [
+    {
+      "id": "hero-neptune",
+      "filename": "Neptune.mp4",
+      "name": "Neptune Statue",
+      "description": "Textured Neptune statue on dark stone floor, cinematic amber/cyan dual-light, slow majestic rotation, starfield. Epic intro.",
+      "category": "hero",
+      "durationSeconds": 2.0,
+      "source": "blender+meshy",
+      "tags": ["statue", "mythology", "epic", "cinematic"]
+    },
+    {
+      "id": "hero-liquid-neon-ribbon",
+      "filename": "LiquidNeonRibbon.mp4",
+      "name": "Liquid Neon Ribbon",
+      "description": "Chrome liquid ribbon with pink/magenta emission, fast spin, cyan + magenta rim lights. Abstract motion hero.",
+      "category": "hero",
+      "durationSeconds": 2.0,
+      "source": "blender+meshy",
+      "tags": ["abstract", "neon", "motion", "chrome"]
+    },
+    {
+      "id": "hero-runic-obelisk",
+      "filename": "RunicObelisk.mp4",
+      "name": "Runic Obelisk",
+      "description": "Dark stone obelisk with glowing cyan runes, low-angle mystery framing, slow dramatic rotation. Fantasy/thriller intro.",
+      "category": "hero",
+      "durationSeconds": 2.0,
+      "source": "blender+meshy",
+      "tags": ["stone", "runes", "mystery", "fantasy"]
+    },
+    {
+      "id": "hero-ai-injection",
+      "filename": "AIInjection.mp4",
+      "name": "AI Injection",
+      "description": "Cyan cyber-emit treatment on the AI Injection Meshy asset. Fresnel-highlighted edges, reflective floor. Tech brand hero.",
+      "category": "hero",
+      "durationSeconds": 2.0,
+      "source": "blender+meshy",
+      "tags": ["cyber", "tech", "brand", "cyan"]
+    },
+    {
+      "id": "hero-holographic-process",
+      "filename": "HolographicProcess.mp4",
+      "name": "Holographic Process",
+      "description": "Holographic glass panels with stacked diagrams, warm-orange rim + cyan fill, rotates slowly in deep space. Tech/product hero.",
+      "category": "hero",
+      "durationSeconds": 2.0,
+      "source": "blender+meshy",
+      "tags": ["holographic", "glass", "tech", "cards"]
+    },
+    {
+      "id": "hero-glass-cards-trio-v1",
+      "filename": "GlassCardsTrio.mp4",
+      "name": "Glass Cards Trio (pure Blender)",
+      "description": "Three floating glass cards with neon orange + cyan outlines, starfield, floor reflection. Baseline pure-Blender test.",
+      "category": "hero",
+      "durationSeconds": 2.5,
+      "source": "blender",
+      "tags": ["glass", "3d", "neon", "cards"]
+    }
+  ]
+}
