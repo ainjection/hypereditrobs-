@@ -195,21 +195,21 @@ function list() {
   }));
 }
 
-function get(id) {
+function get(id: string) {
   return MOODS.find(m => m.id === id) || null;
 }
 
 // Produce per-scene picks for a list of sentences, using the mood's
 // block rotation + accent rotation.
-function applyMoodToSentences({ sentences, mood }) {
+function applyMoodToSentences({ sentences, mood }: { sentences: string[]; mood: any }) {
   if (!mood) throw new Error('mood required');
-  return sentences.map((text, i) => {
+  return sentences.map((text: string, i: number) => {
     const block = mood.blockRotation[i % mood.blockRotation.length];
     const accent = mood.accentRotation[i % mood.accentRotation.length];
     const displayText = mood.textTransform === 'uppercase' ? text.toUpperCase() : text;
     const base = { color: mood.palette.text, fontSize: mood.fontSize };
 
-    const blockProps = { ...base, text: displayText };
+    const blockProps: Record<string, any> = { ...base, text: displayText };
     switch (block) {
       case 'Glitch':
         blockProps.accentColor1 = accent;
